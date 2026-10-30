@@ -34,6 +34,7 @@ interface CacheEntry<T> {
 }
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const cache = new Map<string, CacheEntry<unknown>>();
+let quotaExhaustedUntil = 0;
 
 function getFromCache<T>(key: string): T | null {
   const entry = cache.get(key) as CacheEntry<T> | undefined;
@@ -433,9 +434,18 @@ app.post('/api/summary', async (req: Request, res: Response) => {
     };
   };
 
-  // If Gemini API is not configured, return rule-based insights
-  if (!ai) {
-    return res.json(getRuleBasedSummary());
+  // Summary caching by location and temperature/code
+  const summaryCacheKey = `summary:${(locationName || 'area').toLowerCase()}:${current.weatherCode}:${current.temperature}:${units?.temperature || 'C'}`;
+  const cachedSummary = getFromCache<any>(summaryCacheKey);
+  if (cachedSummary) {
+    return res.json(cachedSummary);
+  }
+
+  // If Gemini API is not configured or in quota cooldown, return rule-based insights
+  if (!ai || Date.now() < quotaExhaustedUntil) {
+    const fallback = getRuleBasedSummary();
+    setInCache(summaryCacheKey, fallback);
+    return res.json(fallback);
   }
 
   try {
@@ -500,21 +510,38 @@ Provide:
     );
 
     const response = await Promise.race([generatePromise, timeoutPromise]);
-
     const jsonText = response.text?.trim() || '';
+
     if (!jsonText) {
-      return res.json(getRuleBasedSummary());
+      const fallback = getRuleBasedSummary();
+      setInCache(summaryCacheKey, fallback);
+      return res.json(fallback);
     }
 
     const parsed = JSON.parse(jsonText);
-    return res.json({
+    const result = {
       summary: parsed.summary,
       tips: parsed.tips,
       source: 'gemini',
-    });
+    };
+    setInCache(summaryCacheKey, result);
+    return res.json(result);
   } catch (error: any) {
-    console.error('Gemini generation error, falling back to rule-based summary:', error?.message);
-    return res.json(getRuleBasedSummary());
+    const errorStr = (error?.message || '').toLowerCase();
+    const isQuotaExhausted =
+      error?.status === 'RESOURCE_EXHAUSTED' ||
+      errorStr.includes('429') ||
+      errorStr.includes('quota') ||
+      errorStr.includes('resource_exhausted');
+
+    if (isQuotaExhausted) {
+      // Set cooldown for 30 minutes so we don't spam a rate-limited endpoint
+      quotaExhaustedUntil = Date.now() + 30 * 60 * 1000;
+    }
+
+    const fallback = getRuleBasedSummary();
+    setInCache(summaryCacheKey, fallback);
+    return res.json(fallback);
   }
 });
 
