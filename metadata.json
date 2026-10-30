@@ -1,0 +1,6 @@
+{
+  "name": "SkyCast",
+  "description": "Live weather forecasts, interactive hourly charts, 7-day outlooks, and AI-powered clothing & activity tips.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
